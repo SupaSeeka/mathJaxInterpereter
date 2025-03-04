@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<head>
+    <title>MathsJax Expression Interpereter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/MathJax.js?config=TeX-MML-AM_CHTML"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<h1>Maths Expression Evaluator</h1> 
+<textarea id="mathsInput" rows="5" cols="50"></textarea>
+<p id="mathsJaxOutput"></p>
+<script>
+
+    let termRegex = /[0-9a-zA-Z.,]/
+    class Token {
+        constructor(type, value, precedence, negated = false) {
+            this.type = type
+            this.value = value
+            this.precedence = precedence
+            this.negated = negated
+        }
+    }
+
+    // stack object
+    class Stack {
+        constructor() { 
+            this.items = []
+        }
+
+        isEmpty() {
+            return (this.items.length === 0)
+        }
+        push(item) {
+            this.items.push(item)
+        }
+
+        pop() {
+            if (this.isEmpty()) {
+                throw new Error("Stack underflow")
+            }
+            return this.items.pop()
+        }
+        
+        peek() {
+            return this.isEmpty() ? null : this.items[this.items.length - 1]
+        }
+
+        size() {
+            return this.items.length
+        }
+        clear() {
+            this.items = []
+        }
+    }
+    // queue object
+    class Queue {
+        constructor() {
+            this.items = []
+        }
+
+        enqueue(item) {
+            this.items.push(item)
+        }
+
+        dequeue() {
+            if (this.isEmpty()) {
+                throw new Error("Queue Underflow")
+            }
+            return this.items.shift()
+        }
+
+        peek() {
+            return this.isEmpty() ? null : this.items[0]
+        }
+
+        isEmpty() {
+            return (this.items.length === 0)
+        }
+
+        size() {
+            return this.items.length
+        }
+    }
+
+    class ASTNode {
+        constructor(token, left = null, right = null) {
+            this.token = token
+            this.left = left
+            this.right = right
+        }
+    }
+
+    function createTokenTable(input) {
+        let tokenTable = []
+        let tempStr = ""
+        let previousToken = null
+        input = input.split("")
+        let shouldNegate = false
+        let operators = { "^": 3, "*": 2, "/": 2, "+": 1, "-": 1, "=": 0 }
+        let unaryOperators = new Set([
+            "sqrt", "sin", "cos", "tan", "sec", "csc", "cot",
+            "arcsin", "arccos", "arctan", "arcsec", "arccsc", "arccot", "arccosec",
+            "ln", "log",
+            "sinh", "cosh", "tanh", "arsinh", "arcosh", "artanh", "sech", "cosech", 
+            "coth", "arsech", "arcosech", "arcoth", "-"
+        ]);
+        let greekLetters = {
+            'alpha': '\\alpha', 'beta': '\\beta', 'gamma': '\\gamma', 'delta': '\\delta',
+            'theta': '\\theta', 'lambda': '\\lambda', 'mu': '\\mu', 'pi': '\\pi', 'rho': '\\rho',
+            'sigma': '\\sigma', 'phi': '\\phi', 'omega': '\\omega',
+            'implies': '\\implies',
+        };
+
+        let termRegex = /[0-9a-zA-Z.,]/
+
+        for (let i = 0; i < input.length; i++) {
+            char = input[i]
+            if (char === " ") {
+                continue
+            }
+            // testing characters
+            if (termRegex.test(char)) {
+                tempStr += char
+
+                if (i + 1 < input.length && termRegex.test(input[i + 1])) {
+                    continue; // Continue accumulating
+                }
+                
+                // if it is an operator
+                if (unaryOperators.has(tempStr)) {
+                    tokenTable.push(new Token("unary_operator", tempStr, 4, shouldNegate))
+                    tempStr = ""
+                } else if (tempStr in greekLetters) {
+                    tokenTable.push(new Token("term", greekLetters[tempStr], 0, shouldNegate));
+                    tempStr = "";
+                } else {
+                    tokenTable.push(new Token("term", tempStr, 0, shouldNegate))
+                }
+                
+                // otherwise, do nothing as it has already been added
+                shouldNegate = false
+                tempStr = ""
+                continue
+            }
+
+            // for when a negative is found
+            else if (char === "-") {
+                // normal binary operator implementation
+                if (previousToken === null || ["binary_operator","equals","opening"].includes(previousToken?.type)) {
+                    shouldNegate = true
+                    continue
+                } else {
+                    // implementation as a negative number and/or term
+                    tokenTable.push(new Token("binary_operator", char, 1));
+                }
+                tempStr = "";
+                continue;
+            }
+            // for binary operators
+            else if (char in operators) {
+                tokenTable.push(new Token("binary_operator", char, operators[char]))
+                tempStr = ""
+                
+            } else if (char === "(") {
+                tokenTable.push(new Token("opening", char, 4, shouldNegate));
+                shouldNegate = false
+                tempStr = ""
+            } else if (char === ")") {
+                tokenTable.push(new Token("closing", char, 4))
+                tempStr = ""
+            } else if (char === "=") {
+                tokenTable.push(new Token("equals", char, 0));
+                shouldNegate = false; // Ensure negation isn't carried over
+                tempStr = "";
+                continue;
+            }else {
+                throw new Error("Error: token not recognised + " + char)
+            }
+
+            previousToken = tokenTable[tokenTable.length - 1]
+        }
+
+        return tokenTable
+    }
+
+    function shuntingYard(tokenTable) {
+        let operatorStack = new Stack()
+        let outputQueue = new Queue()
+
+        for (let token of tokenTable) {
+            if (token.type === "term") {
+                if (!outputQueue.isEmpty() && outputQueue.items[outputQueue.items.length - 1].type === "term") {
+                    // Special case: Consecutive terms should just be concatenated
+                    let lastToken = outputQueue.dequeue();
+                    outputQueue.enqueue(new Token("term", lastToken.value + " \\ " + token.value, 0));
+                } else {
+                    outputQueue.enqueue(token);
+                }
+            }
+ 
+            
+            else if (token.type === "binary_operator" || token.type === "unary_operator") { 
+                while (
+                    !operatorStack.isEmpty() &&
+                    operatorStack.peek().type !== "opening" &&
+                    (
+                        // For binary operators: use greater-than-or-equal precedence
+                        (token.type === "binary_operator" && operatorStack.peek().precedence >= token.precedence) ||
+                        // For unary operators: use strict greater-than precedence so they bind tighter
+                        (token.type === "unary_operator" && operatorStack.peek().precedence > token.precedence)
+                    )
+                ) {
+                    outputQueue.enqueue(operatorStack.pop());
+                }
+                operatorStack.push(token);
+            } 
+            
+            else if (token.type === "opening") {
+                operatorStack.push(token)
+            } 
+            
+            else if (token.type === "closing") {
+                while (!operatorStack.isEmpty() && operatorStack.peek().value !== "(") {
+                    outputQueue.enqueue(operatorStack.pop())
+                }
+                if (!operatorStack.isEmpty() && operatorStack.peek().value === "(") {
+                    let openingToken = operatorStack.pop()
+
+                    if (openingToken.negated) {
+                        outputQueue.enqueue(new Token ("unary_operator", "-", 4))
+                    }
+                } else {
+                    throw new Error("Syntax Error: Missing Bracket")
+                }
+                if (!operatorStack.isEmpty() && operatorStack.peek().type === "unary_operator") {
+                    outputQueue.enqueue(operatorStack.pop());
+                }
+            } else if (token.type === "equals") {
+                while (!operatorStack.isEmpty()) {
+                    outputQueue.enqueue(operatorStack.pop());
+                }
+                operatorStack.push(token); // Push '=' last so it becomes the root
+            }  else {
+                throw new Error("Unrecognised or null token")
+            }   
+        }
+
+        while (!operatorStack.isEmpty()) {
+            let op = operatorStack.pop();
+            outputQueue.enqueue(op);
+        }
+
+        return outputQueue
+    }
+    
+
+    function buildTree(outputQueue) {
+        let stack = new Stack()
+
+        for (let token of outputQueue.items) {
+            if (token.type === "term") {
+                stack.push(new ASTNode(token))
+            } else if (token.type === "binary_operator" || token.type === "equals") {
+                if (stack.size() < 2) {
+                    throw new Error("Stack underflow: Not enough operands for operator.");
+                }
+                let rightNode = stack.pop()
+                let leftNode = stack.pop()
+                let operatorNode = new ASTNode(token, leftNode, rightNode)
+                stack.push(operatorNode)
+            } else if (token.type === "unary_operator") {
+                leftNode = stack.pop()
+                stack.push(new ASTNode(token, leftNode, null))
+            }
+        }
+        return stack.pop()
+    }
+
+    function buildMaths(node, parentPrecedence = 0) {
+        if (node.token.type === "term") {
+            return node.token.negated ? `-${node.token.value}` : node.token.value;
+        }
+
+        if (node.token.type === "unary_operator") {
+            let operand = buildMaths(node.left, 4)
+            return (node.token.value === "sqrt")
+            ? (node.token.negated ? `-\\sqrt{${operand}}` : `\\sqrt{${operand}}`)
+            : `${node.token.negated ? "-" : ""}${node.token.value}(${operand})`;
+            
+        }
+
+        let left = buildMaths(node.left, node.token.precedence);
+        let right = buildMaths(node.right, node.token.precedence);
+        let operator = node.token.value;
+        
+        let currentPrecedence = node.token.precedence;
+
+        // Determine if parentheses are needed (but ignore single numbers)
+        let leftNeedsBrackets = node.left.token.precedence < currentPrecedence && isComplexExpression(node.left);
+        let rightNeedsBrackets = node.right.token.precedence < currentPrecedence && isComplexExpression(node.right);
+
+        if (operator === "^") {
+            let leftWrapped = needsParentheses(node.left) ? `(${left})` : left;
+            return `${leftWrapped}^{${right}}`;
+        } else if (operator === "*") {
+            return node.token.negated 
+                ? `-(${leftNeedsBrackets ? `(${left})` : left} \\times ${rightNeedsBrackets ? `(${right})` : right})`
+                : `${leftNeedsBrackets ? `(${left})` : left} \\times ${rightNeedsBrackets ? `(${right})` : right}`;
+        } else if (operator === "/") {
+            let numerator = needsParentheses(node.left) ? `(${left})` : left;
+            let denominator = needsParentheses(node.right) ? `(${right})` : right;
+            return `\\frac{${numerator}}{${denominator}}`;
+        } else if (operator === "+" || operator === "-") {
+            return node.token.negated 
+                ? `-(${left} ${operator} ${right})` 
+                : `${left} ${operator} ${right}`;
+        } else if (operator === "=") {
+            return `${left} = ${right}`;
+        }
+    }
+
+    // New helper function to check if a node is more than just a simple number or variable
+    function isComplexExpression(node) {
+        return node.token.type !== "term";
+    }
+    function needsParentheses(node) {
+        if (!node) return false;
+        return (node.token.precedence < 2 && isComplexExpression(node)) || (node.token.value === "^" && node.right.token.value === "^");
+    }
+
+
+    document.getElementById("mathsInput").addEventListener('input', function () {
+        let input = document.getElementById("mathsInput").value.trim()
+            
+        document.getElementById("mathsJaxOutput").innerHTML = ""
+        input = input.split("\n")
+
+        let outputHTML = []
+         for (let line of input) {
+
+            if (line.trim() === "") {
+                continue
+            }   
+
+            try {
+                let tokenTable = createTokenTable(line)
+                console.log(tokenTable)
+                let reversePolishNotation = shuntingYard(tokenTable)
+                let root = buildTree(reversePolishNotation)
+                let expression = buildMaths(root)
+                console.log(expression)
+        
+                outputHTML.push(
+                    `<div style="display: flex; align-items: center; gap: 8px;">
+                        <span style="color: green;">&#x1F7E2;</span> 
+                        <span>\\[${expression}\\]</span>
+                    </div>`
+                )
+
+            } catch (error) {
+            
+                let errorMsg = "Invalid expression."
+
+                if (error.message.includes("Stack underflow")) {
+                    errorMsg = "Error: Missing operands or misplaced operators."
+                } else if (error.message.includes("Missing Bracket")) {
+                    errorMsg = "Error: Mismatched parentheses."
+                } else if (error.message.includes("Unrecognised or null token")) {
+                    errorMsg = "Error: Unrecognized character."
+                } else {
+                    errorMsg = `Error: ${error.message}`
+                }
+
+                outputHTML.push(
+                    `<div style="background-color: #ffcccc; padding: 5px; border-radius: 4px;">
+                        <span style="color: red;">❌</span> <strong>${line}</strong> 
+                        <br> <small>${errorMsg}</small>
+                    </div>`
+                )
+            }
+         }
+         if (outputHTML.length > 0) {
+            document.getElementById("mathsJaxOutput").innerHTML = outputHTML.join("")
+            MathJax.Hub.Queue(["Typeset", MathJax.Hub, "mathsJaxOutput"])
+        }
+    })
+</script> 
